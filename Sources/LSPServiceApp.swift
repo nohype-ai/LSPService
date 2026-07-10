@@ -2,11 +2,19 @@ import Vapor
 import Foundation
 import SwiftyToolz
 
+// TODO: move this setter to SwiftyToolz
+extension Log {
+    /// Cross-actor mutation of `minimumPrintLevel` (property assignment is not allowed).
+    func setMinimumPrintLevel(_ level: Level) {
+        minimumPrintLevel = level
+    }
+}
+
 @main
 public class LSPServiceApp {
     
-    static func main() throws {
-        Log.shared.minimumPrintLevel = .info // adjust log level for development
+    static func main() async throws {
+        await Log.shared.setMinimumPrintLevel(.info) // adjust log level for development
         let lspServiceApp = try LSPServiceApp()
         try lspServiceApp.run()
     }
