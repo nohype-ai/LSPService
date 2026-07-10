@@ -73,7 +73,7 @@ struct ServerExecutableConfigs {
 }
 
 // TODO: move this to FoundationToolz
-extension Executable.Configuration: CustomStringConvertible, CustomDebugStringConvertible {
+extension Executable.Configuration: @retroactive CustomStringConvertible, @retroactive CustomDebugStringConvertible {
     
     public var debugDescription: String { description }
     
