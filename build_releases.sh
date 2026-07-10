@@ -1,7 +1,18 @@
 #! /bin/zsh
 
-swift build --configuration release --arch arm64
-zip -j ../codeface-io.github.io/lspservice/binaries/arm64-apple-macosx/LSPService.zip .build/arm64-apple-macosx/release/LSPService
+set -euo pipefail
 
-swift build --configuration release --arch x86_64
-zip -j ../codeface-io.github.io/lspservice/binaries/x86_64-apple-macosx/LSPService.zip .build/x86_64-apple-macosx/release/LSPService
+BINARY=".build/release/LSPService"
+DEST_DIR="../../apps/codeface-io.github.io/lspservice/binaries/arm64-apple-macosx"
+DEST_ZIP="$DEST_DIR/LSPService.zip"
+
+swift build --configuration release
+
+if [[ ! -f "$BINARY" ]]; then
+  echo "error: missing binary at $BINARY after build" >&2
+  exit 1
+fi
+
+mkdir -p "$DEST_DIR"
+zip -j "$DEST_ZIP" "$BINARY"
+echo "wrote $DEST_ZIP"
