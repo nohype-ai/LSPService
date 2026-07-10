@@ -73,48 +73,50 @@ struct RouteConfigurator {
             throw "No LSP server config found for language \(lang.capitalized)"
         }
         
-        let newServerExecutable = try LSP.ServerExecutable(config: config) { packetFromServer in
-            activeWebSocket?.send([UInt8](packetFromServer.data))
-        }
+        let newServerExecutable = try LSP.ServerExecutable(
+            config: config,
+            handleLSPPacket: { packetFromServer in
+                activeWebSocket?.send([UInt8](packetFromServer.data))
+            },
+            handleError: { stdErrData in
+                guard stdErrData.count > 0 else {
+                    log(error: "\(lang.capitalized) language server sent empty data via stdErr")
+                    return
+                }
+                
+                var stdErrString = stdErrData.utf8String
+                if stdErrString.last == "\n" { stdErrString.removeLast() }
+                
+                log("\(lang.capitalized) language server sent message via stdErr:\n\(stdErrString)")
+                
+                activeWebSocket?.send(stdErrString)
+            },
+            handleTermination: {
+                /**
+                 FIXME: sometimes the server terminates but this handler is never called, leading to this log:
+                 
+                 ℹ️ Running LSP server /Users/seb/Desktop/sourcekit-lsp
+                 ℹ️ ServerExecutable terminated. code: 2
+                 ℹ️ WebSocket did close
+                 */
+                log(warning: "\(lang.capitalized) language server did terminate")
+                
+                guard let ws = activeWebSocket, !ws.isClosed else { return }
+                
+                let errorFeedbackWasSent = ws.eventLoop.makePromise(of: Void.self)
+                
+                errorFeedbackWasSent.futureResult.whenComplete { _ in
+                    ws.close(promise: nil)
+                    activeWebSocket = nil
+                }
+                
+                ws.send("\(lang.capitalized) language server did terminate. LSPService will close the websocket.",
+                        promise: errorFeedbackWasSent)
+            }
+        )
         
         activeServerExecutable?.stop()
         activeServerExecutable = newServerExecutable
-        
-        newServerExecutable.didSendError = { stdErrData in
-            guard stdErrData.count > 0, var stdErrString = stdErrData.utf8String else {
-                log(error: "\(lang.capitalized) language server sent empty or undecodable data via stdErr")
-                return
-            }
-            
-            if stdErrString.last == "\n" { stdErrString.removeLast() }
-            
-            log("\(lang.capitalized) language server sent message via stdErr:\n\(stdErrString)")
-            
-            activeWebSocket?.send(stdErrString)
-        }
-        
-        newServerExecutable.didTerminate = {
-            /**
-             FIXME: sometimes the server terminates but this handler is never called, leading to this log:
-             
-             ℹ️ Running LSP server /Users/seb/Desktop/sourcekit-lsp
-             ℹ️ ServerExecutable terminated. code: 2
-             ℹ️ WebSocket did close
-             */
-            log(warning: "\(lang.capitalized) language server did terminate")
-            
-            guard let ws = activeWebSocket, !ws.isClosed else { return }
-            
-            let errorFeedbackWasSent = ws.eventLoop.makePromise(of: Void.self)
-            
-            errorFeedbackWasSent.futureResult.whenComplete { _ in
-                ws.close(promise: nil)
-                activeWebSocket = nil
-            }
-            
-            ws.send("\(lang.capitalized) language server did terminate. LSPService will close the websocket.",
-                    promise: errorFeedbackWasSent)
-        }
         
         // TODO: check what we can/should improve in how we run the process: https://developer.apple.com/forums/thread/690310
         

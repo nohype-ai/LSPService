@@ -19,7 +19,7 @@ struct ServerExecutableConfigs {
     private static func loadConfigs() -> Configs {
         let filePath = Bundle.main.bundlePath + "/LSPServiceConfig.json"
         
-        if let configsFromFile = Configs(fromFilePath: filePath), !configsFromFile.isEmpty {
+        if let configsFromFile = try? Configs(fromFilePath: filePath), !configsFromFile.isEmpty {
             log("Found \(configsFromFile.count) language server configurations in this file: " + filePath)
             logConfigs(configsFromFile)
             return configsFromFile
@@ -44,8 +44,13 @@ struct ServerExecutableConfigs {
             "kotlin": .init(path: "/opt/homebrew/bin/kotlin-language-server")
         ]
         
-        if hardcodedConfigs.save(toFilePath: filePath,
-                                 options: [.prettyPrinted, .withoutEscapingSlashes]) == nil {
+        do
+        {
+            try hardcodedConfigs.save(toFilePath: filePath,
+                                      options: [.prettyPrinted, .withoutEscapingSlashes])
+        }
+        catch
+        {
             log(error: "Failed to save server executable configs to \(filePath)")
         }
         
