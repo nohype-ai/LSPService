@@ -47,22 +47,29 @@ struct RouteConfigurator {
                 throw error
             }
         } onUpgrade: { request, newWebsocket in
-            newWebsocket.onBinary { ws, bufferedBytesFromWebSocket in
-                let dataFromWebSocket = Data(buffer: bufferedBytesFromWebSocket)
-                activeServerExecutable?.receive(input: dataFromWebSocket)
-            }
-            
-            newWebsocket.onClose.whenComplete { result in
-                switch result {
-                case .success:
-                    log("WebSocket did close without error")
-                case .failure(let error):
-                    log(error: "WebSocket failed to close: \(error.localizedDescription)")
+            /**
+             Vapor's async WebSocket API invokes `onUpgrade` inside an unstructured `Task`,
+             which is *not* on the WebSocket's EventLoop. Sync `onBinary` / related APIs write
+             `NIOLoopBoundBox` and must run on that loop. Hop first.
+             */
+            newWebsocket.eventLoop.execute {
+                newWebsocket.onBinary { ws, bufferedBytesFromWebSocket in
+                    let dataFromWebSocket = Data(buffer: bufferedBytesFromWebSocket)
+                    activeServerExecutable?.receive(input: dataFromWebSocket)
                 }
-            }
+                
+                newWebsocket.onClose.whenComplete { result in
+                    switch result {
+                    case .success:
+                        log("WebSocket did close without error")
+                    case .failure(let error):
+                        log(error: "WebSocket failed to close: \(error.localizedDescription)")
+                    }
+                }
 
-            activeWebSocket?.close(promise: nil)
-            activeWebSocket = newWebsocket
+                activeWebSocket?.close(promise: nil)
+                activeWebSocket = newWebsocket
+            }
         }
     }
     
@@ -76,7 +83,8 @@ struct RouteConfigurator {
         let newServerExecutable = try LSP.ServerExecutable(
             config: config,
             handleLSPPacket: { packetFromServer in
-                activeWebSocket?.send([UInt8](packetFromServer.data))
+                // Process stdout is delivered off the NIO EventLoop.
+                sendToActiveWebSocket(binary: [UInt8](packetFromServer.data))
             },
             handleError: { stdErrData in
                 guard stdErrData.count > 0 else {
@@ -89,7 +97,7 @@ struct RouteConfigurator {
                 
                 log("\(lang.capitalized) language server sent message via stdErr:\n\(stdErrString)")
                 
-                activeWebSocket?.send(stdErrString)
+                sendToActiveWebSocket(text: stdErrString)
             },
             handleTermination: {
                 /**
@@ -101,17 +109,24 @@ struct RouteConfigurator {
                  */
                 log(warning: "\(lang.capitalized) language server did terminate")
                 
-                guard let ws = activeWebSocket, !ws.isClosed else { return }
+                // Process termination handler is also off the EventLoop.
+                guard let ws = activeWebSocket else { return }
                 
-                let errorFeedbackWasSent = ws.eventLoop.makePromise(of: Void.self)
-                
-                errorFeedbackWasSent.futureResult.whenComplete { _ in
-                    ws.close(promise: nil)
-                    activeWebSocket = nil
+                ws.eventLoop.execute {
+                    guard !ws.isClosed else { return }
+                    
+                    let errorFeedbackWasSent = ws.eventLoop.makePromise(of: Void.self)
+                    
+                    errorFeedbackWasSent.futureResult.whenComplete { _ in
+                        ws.close(promise: nil)
+                        if activeWebSocket === ws {
+                            activeWebSocket = nil
+                        }
+                    }
+                    
+                    ws.send("\(lang.capitalized) language server did terminate. LSPService will close the websocket.",
+                            promise: errorFeedbackWasSent)
                 }
-                
-                ws.send("\(lang.capitalized) language server did terminate. LSPService will close the websocket.",
-                        promise: errorFeedbackWasSent)
             }
         )
         
@@ -127,6 +142,23 @@ struct RouteConfigurator {
 }
 
 // MARK: - Basic Objects
+
+/// Process I/O arrives off the EventLoop; hop before touching the Vapor WebSocket.
+private func sendToActiveWebSocket(binary: [UInt8]) {
+    guard let ws = activeWebSocket else { return }
+    ws.eventLoop.execute {
+        guard !ws.isClosed else { return }
+        ws.send(binary)
+    }
+}
+
+private func sendToActiveWebSocket(text: String) {
+    guard let ws = activeWebSocket else { return }
+    ws.eventLoop.execute {
+        guard !ws.isClosed else { return }
+        ws.send(text)
+    }
+}
 
 fileprivate var activeWebSocket: Vapor.WebSocket?
 fileprivate var activeServerExecutable: LSP.ServerExecutable?
